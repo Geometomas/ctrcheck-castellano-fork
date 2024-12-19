@@ -7,6 +7,9 @@ la pagina original de ctrcheck es https://wiki.hacks.guide/wiki/3DS:Ctrcheck
 lo que hice yo es traducir el script ctrcheck para que ahora este en español, ta weno
 
 
+
+
+
 yeah i did this for fun so
 
 ctrcheck is a godmode9 script that performs sanity checks on the console. It was created by FrozenFire and is currently in the hands of StarlitSkies, many thanks to both of them and all credits go to them.
