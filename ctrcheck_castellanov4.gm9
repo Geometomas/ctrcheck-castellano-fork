@@ -1,0 +1,793 @@
+# Un script para comprobar todos los archivos importantes de una consola 3DS y su integridad.
+# script original por FrozenFire
+# revisión, arreglos, y mantenimiento actual por StarlitSkies
+# traducción al castellano por Geometomas
+# ultima modificacion: 2024-09-30
+# ultima traduccion: 2024-12-18
+# si no obtuviste este archivo de https://github.com/nh-server/scripts (o de este fork) ve ahi y asegurate de que esta copia no haya sido alterada
+
+@cleanup
+set VERSION "4"
+set FULL "0"
+set PREVIEW_MODE "ctrcheck v$[VERSION]"
+
+set NANDSECTORS_LOG ""
+set ESSENTIALS_LOG ""
+set CTRNAND_LOG ""
+set TWLNAND_LOG ""
+set FIRM_LOG ""
+set SD_LOG ""
+set MISC_LOG ""
+set LOG "desactivado"
+
+@menu
+labelsel -o -s "Selecciona que partes del sistema quieres revisar.\nLa consola es una $[REGION] $[RDTYPE] $[ONTYPE] usando $[HAX].\nEl id0 es $[SYSID0].\n\nRegistro permanente: $[LOG]" check_*
+goto menu
+
+@check_Todo
+set FULL "1"
+goto NAND_Header
+
+@check_Solo_Nand
+goto NAND_Header
+
+@check_Solo_SD
+goto SD_Files
+
+@NAND_Header
+set PREVIEW_MODE "ctrcheck v$[VERSION]\nActualmente procesando: NAND. 	Progreso:\n \nEncabezado NAND: ~~~\nSectores NAND: ---\nCTRNAND: ---\nTWLNAND: ---\nTWLP: ---\nParticiones FIRM: ---"
+
+# revisar si el encabezado NAND es sighax, basado en los hashes
+# sighax siempre sera leido valido por boot9 incluso sin cfw, entonces solo se usa para checkear si las particiones customizadas son posibles
+set SIGHAX "0"
+if find S:/nand_hdr.bin NULL
+    if not shaget S:/nand_hdr.bin@0:200 NULL
+        set NANDSECTORS_LOG "$[NANDSECTORS_LOG]Error: Encabezado NAND tiene un tamaño invalido.\n"
+        goto NAND_Sectors
+    end
+else
+    set NANDSECTORS_LOG "$[NANDSECTORS_LOG]Error: Encabezado NAND no encontrado.\n"
+    goto NAND_Sectors
+end
+
+if sha S:/nand_hdr.bin@0:100 A4AE99B93412E4643E4686987B6CFD59701D5C655CA2FF671CE680B4DDCF0948
+    set NANDSECTORS_LOG "$[NANDSECTORS_LOG]Información: La firma del encabezado NAND es sighax.\n"
+    set SIGHAX "1"
+end
+
+# revisar la tabla de particion del encabezado NAND  basado en hash contra tablas de particiones normales
+if sha S:/nand_hdr.bin@100:60 dfd434b883874d8b585a102f3cf3ae4cef06767801db515fdf694a7e7cd98bc2
+    if chk $[ONTYPE] "N3DS"
+        set NANDSECTORS_LOG "$[NANDSECTORS_LOG]Información: Encabezado NAND es normal. (n3DS)\n"
+    else
+        set NANDSECTORS_LOG "$[NANDSECTORS_LOG]Critico: o3DS tiene un encabezado NAND n3ds.\n"
+    end
+elif sha S:/nand_hdr.bin@100:60 ae9b6645105f3aec22c2e3ee247715ab302874fca283343c731ca43ea1baa25d
+    if chk $[ONTYPE] "O3DS"
+        set NANDSECTORS_LOG "$[NANDSECTORS_LOG]Información: Encabezado NAND es normal. (o3DS)\n"
+    else
+        set NANDSECTORS_LOG "$[NANDSECTORS_LOG]Critico: n3DS tiene un encabezado NAND o3ds.\n"
+    end
+else
+    fget S:/nand_hdr.bin@100:4 NCSD
+    # revisar el encabezado magico NCSD, si no esta presente entonces hay algo muy malo
+    if chk $[NCSD] "4E435344"
+        if chk $[SIGHAX] "1"
+            set NANDSECTORS_LOG "$[NANDSECTORS_LOG]Advertencia: La tabla de particiones NAND esta modificada, pero hay sighax en el encabezado NAND..\n"
+        else
+            set NANDSECTORS_LOG "$[NANDSECTORS_LOG]Error: La tabla de particiones NAND esta modificada, y no hay sighax en el encabezado NAND.\n"
+        end
+    else
+        # tu NAND tiene un pequeño caso de daño cerebral
+        set NANDSECTORS_LOG "$[NANDSECTORS_LOG]Error: Los datos del encabezado NAND son invalidos. Te has encontrado con un terrible destino, ¿no es así?\n"
+    end
+end
+
+@NAND_Sectors
+set PREVIEW_MODE "ctrcheck v$[VERSION]\nActualmente procesando: NAND. Progreso:\n \nEncabezado NAND: LISTO\nSectores NAND: ~~~\nCTRNAND: ---\nTWLNAND: ---\nTWLP: ---\nTWLP: ---\nParticiones FIRM: ---"
+
+# verificar el sector secreto, el cual es doblemente importante para las New
+if chk $[ONTYPE] "N3DS" 
+    if not sha S:/sector0x96.bin 82F2730D2C2DA3F30165F987FDCCAC5CBAB24B4E5F65C981CD7BE6F438E6D9D3
+        set NANDSECTORS_LOG "$[NANDSECTORS_LOG]Advertencia: Los datos del sector secreto son invalidos. Puede que a9lh este instalado.\n"
+    end
+else
+    if fget S:/nand.bin@12C00:2 SBYTE
+        if chk -u $[SBYTE] "0000"
+            if chk -u $[SBYTE] "FFFF"
+                set NANDSECTORS_LOG "$[NANDSECTORS_LOG]Advertencia: Puede que hayan sobras de a9lh en el sector secreto.\n"
+            end
+        end
+    else
+        set NANDSECTORS_LOG "$[NANDSECTORS_LOG]Critico: NAND es ilegible en el offset 0x12C00...?\n"
+    end
+end
+
+# verificar si TWL MBR existe y es normal (no hay ni una buena razón de que este seria modificado)
+if find S:/twlmbr.bin NULL
+    if not sha S:/twlmbr.bin 77a98e31f1ff7ec4ef2bfacca5a114a49a70dcf8f1dcd23e7a486973cfd06617
+        set NANDSECTORS_LOG "$[NANDSECTORS_LOG]Critico: Los datos de TWL MBR son invalidos.\n"
+    end
+else
+    set NANDSECTORS_LOG "$[NANDSECTORS_LOG]Critico: TWL MBR no encontrado.\n"
+end
+
+# obtener el primer byte de la ubicación de stage2
+if not fget S:/nand.bin@B800000:1 ABYTE
+    set NANDSECTORS_LOG "$[NANDSECTORS_LOG]Critico: NAND es ilegible en el offset 0xB800000...?\n"
+end
+# en vez de revisar el sector entero contra multiples stage2, esto solo revisa si el sector esta "limpio"
+# (si el primer byte no esta ¨limpio¨ asume que stage2 esta ahi, se puede hacer de una mejor manera)
+# si stage2 se remplazo con mierda se activaria esta advertencia
+if chk -u $[ABYTE] "00"
+    if chk -u $[ABYTE] "FF"
+        set NANDSECTORS_LOG "$[NANDSECTORS_LOG]Advertencia: Es probable que queden restos del stage2 payload de a9lh's.\n"
+    end
+end
+
+# revisa la existencia de la unidad bonus, solo porque es bacan saber si esta
+if isdir 8:
+    set NANDSECTORS_LOG "$[NANDSECTORS_LOG]Información: La unidad bonus esta activada.\n"
+end
+
+
+@CTRNAND
+# revisa si la CTRNAND se puede acceder, omite todo si no se puede
+if not isdir 1:
+    set CTRNAND_LOG "$[CTRNAND_LOG]Error: CTRNAND no encontrada.\n"
+    goto TWLNAND
+end
+
+set PREVIEW_MODE "ctrcheck v$[VERSION]\nActualmente procesando: NAND. Progreso:\n \nEncabezado NAND: LISTO\nSectores NAND: LISTO\nCTRNAND: ~~~\nTWLNAND: ---\nTWLP: ---\nParticiones FIRM: ---"
+
+# encuentra la movable.sed, revisa si es valida, y revisa si CMAC esta correcto basado en el peso (288 bytes vs 320 bytes)
+set MOVABLEVALID "0"
+set MLFCSHASH ""
+if not find 1:/private/movable.sed movable
+    goto LFCS
+end
+if shaget $[movable]@0:100 NULL
+    fget $[movable]@8:10 ISVALID
+    if chk $[ISVALID] "00000000000000000000000000000000"
+        set ESSENTIALS_LOG "$[ESSENTIALS_LOG]Critico: La copia de LFCS de movable.sed está vacia.\n"
+    end
+else
+    goto LFCS
+end
+fget $[movable]@0:4 HEADER
+if chk -u $[HEADER] "53454544"
+    goto LFCS
+end
+set MOVABLEVALID "1"
+fget $[movable]@5:1 CMAC
+shaget $[movable]@8:110 MLFCSHASH
+# revisa si movable.sed al menos tenga el encabezado magico SEED, despues revisa si CMAC esta correcto basado en el peso(320 vs 288 bytes)
+if chk $[CMAC] "01"
+    if not fget $[movable]@120:1 NULL
+        if ask "movable.sed esta desconfigurado.\nPresione (A) para reconfigurarla a valores normales."
+            fset $[movable]@5 00
+            set ESSENTIALS_LOG "$[ESSENTIALS_LOG]Información: movable.sed ha sido arreglado removiendo la bandera CMAC.\n"
+        else
+            set ESSENTIALS_LOG "$[ESSENTIALS_LOG]Critico: movable.sed pesa 288 bytes, pero tiene la bandera CMAC.\n"
+        end
+    end
+end
+
+@LFCS
+# encuentra LFCS, revisa si es valido, revisa si es la misma que la copia de LFCS que tiene movable.sed, y revisa contra la semilla de OTP que se usa para formar parte de LFCS
+# que se tengan en cuenta ambos archivos con nombres potenciales de LocalFriendCodeSeed
+set LFCSVALID "0"
+if find 1:/rw/sys/LocalFriendCodeSeed_B LFCS
+elif find 1:/rw/sys/LocalFriendCodeSeed_A LFCS
+else
+    goto SecureInfo
+end
+if shaget $[LFCS]@0:100 NULL
+    fget $[LFCS]@0:10 ISVALID
+    if chk $[ISVALID] "00000000000000000000000000000000"
+        goto SecureInfo
+    end
+else
+    goto SecureInfo
+end
+set LFCSVALID "1"
+shaget $[LFCS]@0:110 LFCSHASH
+# compara el LFCS en movable.sed con el archivo LFCS, si movable.sed existe
+if chk -u $[MLFCSHASH] ""
+    if chk -u $[MLFCSHASH] $[LFCSHASH]
+        set ESSENTIALS_LOG "$[ESSENTIALS_LOG]Información: LFCS no coincide con movable.sed.\n"
+    end
+end
+if find M:/otp_dec.mem OTP    
+    fget $[LFCS]@108:8 LFCSEED
+    fget $[OTP]@8:8 OTPSEED
+    if chk -u $[LFCSEED] $[OTPSEED]
+        set ESSENTIALS_LOG "$[ESSENTIALS_LOG]Advertencia: La consola tiene un LFCS donado.\n"
+    end
+end
+
+@SecureInfo
+# encuentra secureinfo_(a/b) y revisa si son validos
+set SECVALID "0"
+if find 1:/rw/sys/SecureInfo_A SEC
+elif find 1:/rw/sys/SecureInfo_B SEC
+else
+    goto HWCAL0
+end
+if not find -s 1:/rw/sys/SecureInfo_C ALTSEC
+    set ALTSEC ""
+end
+if not shaget $[SEC]@0:110 NULL
+    goto HWCAL0
+end
+# las revisiones aqui se hacen contra el final del archivo ya que esa parte contiene el serial; la firma RSA no es importante para la solución de problemas
+fget $[SEC]@100:10 ISVALID
+if chk $[ISVALID] "00000000000000000000000000000000"
+    goto HWCAL0
+else
+    set SECVALID "1"
+    fget $[SEC]@10C:1 SECSERIALCHECK
+    if chk $[SECSERIALCHECK] "00"
+        fget $[SEC]@102:0A SECSERIAL
+    else
+        fget $[SEC]@102:0B SECSERIAL
+    end
+end
+
+# despues revisa si coincide con la región de la consola, revisa por cambio de region (presencia de secureinfo_c), y usa eso para para comparación de datos y para ver a que región se cambio
+if chk -u $[ALTSEC] ""
+    set REGCHG "1"
+    fget $[ALTSEC]@100:1 ALTREGSEC
+    if chk $[ALTREGSEC] "00"
+        set ALTREG "JPN"
+    elif chk $[ALTREGSEC] "01"
+        set ALTREG "USA"
+    elif chk $[ALTREGSEC] "02"
+        set ALTREG "EUR"
+    elif chk $[ALTREGSEC] "04"
+        set ALTREG "CHN"
+    elif chk $[ALTREGSEC] "05"
+        set ALTREG "KOR"
+    elif chk $[ALTREGSEC] "06"
+        set ALTREG "TWN"
+    end
+else 
+    set REGCHG "0"
+end
+fget $[SEC]@100:1 REGSEC
+if chk $[REGSEC] "00"
+    set REG "JPN"
+elif chk $[REGSEC] "01"
+    set REG "USA"
+elif chk $[REGSEC] "02"
+    set REG "EUR"
+elif chk $[REGSEC] "04"
+    set REG "CHN"
+elif chk $[REGSEC] "05"
+    set REG "KOR"
+elif chk $[REGSEC] "06"
+    set REG "TWN"
+end
+if chk -u $[REG] $[REGION]
+    set ESSENTIALS_LOG "$[ESSENTIALS_LOG]Advertencia: SecureInfo no coincide con la región de la consola.\n"
+end
+if chk $[REGCHG] "1"
+    if chk -u $[ALTREG] $[REGION]
+        set ESSENTIALS_LOG "$[ESSENTIALS_LOG]Información: La región de la consola esta cambiada de $[REG] a $[ALTREG].\n"
+    else
+        set ESSENTIALS_LOG "$[ESSENTIALS_LOG]Información: SecureInfo_C existe, pero la región de la consola no esta cambiada.\n"
+    end
+end
+
+@HWCAL0
+# revisa si el primer HWCAL existe
+set HWCAL0VALID "0"
+if find 1:/ro/sys/HWCAL0.dat HWCAL0
+    if not shaget $[HWCAL0]@0:900 NULL
+        goto HWCAL1
+    end
+else
+    goto HWCAL1
+end
+# si es valido, revisa si tiene el encabezado magico CCAL
+fget $[HWCAL0]@0:4 HEADER
+if chk $[HEADER] "4343414C"
+    set HWCAL0VALID "1"
+end
+
+@HWCAL1
+# revisa si el segundo HWCAL existe
+set HWCAL1VALID "0"
+if find 1:/ro/sys/HWCAL1.dat HWCAL1
+    if not shaget $[HWCAL1]@0:900 NULL
+        goto Misc_CTRNAND
+    end
+else
+    goto Misc_CTRNAND
+end
+# si es valido, revisa si tiene el encabezado magico CCAL
+fget $[HWCAL1]@0:4 HEADER
+if chk $[HEADER] "4343414C"
+    set HWCAL1VALID "1"
+end
+
+@Misc_CTRNAND
+# revisa si el sistema puede encender sin una SD
+if find 1:/boot.firm NULL
+    if find 1:/rw/luma/payloads/GodMode9.firm NULL
+        set CTRNAND_LOG "$[CTRNAND_LOG]Información: GodMode9 y Luma3DS estan en la NAND.\n"
+    else
+        set CTRNAND_LOG "$[CTRNAND_LOG]Información: Luma3DS esta en la NAND, pero GodMode9 no.\n"
+    end
+else
+    set CTRNAND_LOG "$[CTRNAND_LOG]Advertencia: Luma3DS no esta en la NAND. (Esta consola no puede encender sin una SD.)\n"
+end
+
+# revisa si la base de datos de los titulos existe en la NAND
+if find 1:/dbs/title.db NANDTITLEDB
+    if shaget $[NANDTITLEDB]@0:400 NULL
+        fget $[NANDTITLEDB]@100:4 HEADER
+        # revisa si el title.db de la NAND tiene el encabezado magico DIFF
+        if chk -u $[HEADER] "44494646"
+            set CTRNAND_LOG "$[CTRNAND_LOG]Critico: Los datos de CTRNAND title.db son invalidos.\n"
+        end
+    else
+        set CTRNAND_LOG "$[CTRNAND_LOG]Critico: CTRNAND title.db tiene un tamaño invalido.\n"
+    end
+else
+    set CTRNAND_LOG "$[CTRNAND_LOG]Critico: CTRNAND title.db no encontrado.\n"
+end
+
+set RECOVERYMODE "0"
+if chk $[MOVABLEVALID] "0"
+    set RECOVERYMODE "1"
+end
+if chk $[LFCSVALID] "0"
+    set RECOVERYMODE "1"
+end
+if chk $[SECVALID] "0"
+    set RECOVERYMODE "1"
+end
+if chk $[HWCAL0VALID] "0"
+    set RECOVERYMODE "1"
+end
+if chk $[HWCAL1VALID] "0"
+    set RECOVERYMODE "1"
+end
+
+if chk $[RECOVERYMODE] "1"
+    goto CTRNAND_Recovery
+else
+    goto TWLNAND
+end
+
+@CTRNAND_Recovery
+# si la bandera de recuperamiento existe, entonces ya han probado esto. si alguna parte de el ha fallado, ahora fallara de nuevo - no hay necesidad de hacerlo denuevo
+if find 9:/RECOVERYFLAG NULL
+    if chk $[MOVABLEVALID] "0"
+        set ESSENTIALS_LOG "$[ESSENTIALS_LOG]Bruh Momento: movable.sed sigue invalido despues de un intento de recuperación."
+    end
+    if chk $[LFCSVALID] "0"
+        set ESSENTIALS_LOG "$[ESSENTIALS_LOG]Bruh Momento: LFCS sigue invalido despues de un intento de recuperación."
+    end
+    if chk $[SECVALID] "0"
+        set ESSENTIALS_LOG "$[ESSENTIALS_LOG]Bruh Momento: SecureInfo sigue invalido despues de un intento de recuperación."
+    end
+    if chk $[HWCAL0VALID] "0"
+        set ESSENTIALS_LOG "$[ESSENTIALS_LOG]Bruh Momento: HWCAL0 sigue invalido despues de un intento de recuperación."
+    end
+    if chk $[HWCAL1VALID] "0"
+        set ESSENTIALS_LOG "$[ESSENTIALS_LOG]Bruh Momento: HWCAL1 sigue invalido despues de un intento de recuperación."
+    end
+    goto TWLNAND
+end
+set PREVIEW_MODE "ctrcheck v$[VERSION]\nActualmente procesando: NAND. Progreso:\n \nEncabezado NAND: LISTO\nSectores NAND: LISTO\nCTRNAND: !!!\nTWLNAND: ---\nTWLP: ---\nFIRM Partitions: ---"
+set TRYRECOVERY "0"
+if find S:/essential.exefs NULL
+    if ask "Archivos criticos en la CTRNAND son invalidos,\npero una copia de seguridad se ha encontrado.\nPresiona (A) para entrar al modo de recuperación de datos.\n \n(Si recientemente intentaste esto,\npuedes omitir seguramente esta parte.)"
+        allow -a 1:
+        set TRYRECOVERY "1"
+    else
+        if chk $[MOVABLEVALID] "0"
+            set ESSENTIALS_LOG "$[ESSENTIALS_LOG]Error: movable.sed es invalido, y la recuperación de datos ha sido denegada."
+        end
+        if chk $[LFCSVALID] "0"
+            set ESSENTIALS_LOG "$[ESSENTIALS_LOG]Error: LFCS es invalido, y la recuperación de datos ha sido denegada."
+        end
+        if chk $[SECVALID] "0"
+            set ESSENTIALS_LOG "$[ESSENTIALS_LOG]Error: SecureInfo es invalido, y la recuperación de datos ha sido denegada."
+        end
+        if chk $[HWCAL0VALID] "0"
+            set ESSENTIALS_LOG "$[ESSENTIALS_LOG]Error: HWCAL0 es invalido, y la recuperación de datos ha sido denegada."
+        end
+        if chk $[HWCAL1VALID] "0"
+            set ESSENTIALS_LOG "$[ESSENTIALS_LOG]Error: HWCAL1 es invalido, y la recuperación de datos ha sido denegada."
+        end
+    end
+else
+    if chk $[MOVABLEVALID] "0"
+        set ESSENTIALS_LOG "$[ESSENTIALS_LOG]Error: movable.sed es invalido, y essential.exefs no existe."
+    end
+    if chk $[LFCSVALID] "0"
+        set ESSENTIALS_LOG "$[ESSENTIALS_LOG]Error: LFCS es invalido, y essential.exefs no existe."
+    end
+    if chk $[SECVALID] "0"
+        set ESSENTIALS_LOG "$[ESSENTIALS_LOG]Error: SecureInfo es invalido, y essential.exefs no existe."
+    end
+    if chk $[HWCAL0VALID] "0"
+        set ESSENTIALS_LOG "$[ESSENTIALS_LOG]Error: HWCAL0 es invalido, y essential.exefs no existe."
+    end
+    if chk $[HWCAL1VALID] "0"
+        set ESSENTIALS_LOG "$[ESSENTIALS_LOG]Error: HWCAL1 es invalido, y essential.exefs no existe."
+    end
+end
+
+if chk $[TRYRECOVERY] "0"
+    goto TWLNAND
+end
+
+imgmount S:/essential.exefs
+
+# revisa la integridad del respaldo de movable.sed, arregla CMAC si es necesario, y copialo a la NAND si es valido
+set VALIDBACKUP "1"
+if shaget G:/movable@0:100 NULL
+    fget G:/movable@0:4 HEADER
+    fget G:/movable@5:1 CMAC
+    if chk -u $[HEADER] "53454544"
+        set VALIDBACKUP "0"
+    end
+    if chk $[CMAC] "01"
+        if not fget G:/movable@120:1 NULL
+            set CMACFIX "1"
+        else
+            set CMACFIX "0"
+        end
+    end
+else
+    set VALIDBACKUP "0"
+end
+if chk $[VALIDBACKUP] "1"
+    if chk $[CMACFIX] "0"
+        cp -n -w G:/movable 1:/private/movable.sed
+    else
+        cp -n -w G:/movable 9:/movable
+        fset 9:/movable@5 00
+        cp -n -w 9:/movable 1:/private/movable.sed
+        rm -o -s 9:/movable
+    end
+end
+
+# revisa la integridad del respaldo de LCFS, y copialo a la NAND si es valido
+set VALIDBACKUP "1"
+if shaget G:/frndseed@0:100 NULL
+    fget G:/frndseed@0:10 ISVALID
+    if chk $[ISVALID] "00000000000000000000000000000000"
+        set VALIDBACKUP "0"
+    end
+else
+    set VALIDBACKUP "0"
+end
+if chk $[VALIDBACKUP] "1"
+    cp -n -w G:/frndseed 1:/rw/sys/LocalFriendCodeSeed_B
+end
+
+# revisa la integridad del respaldo de SecureInfo, y copialo a la NAND si es valido
+set VALIDBACKUP "1"
+if shaget G:/secinfo@0:100 NULL
+    fget G:/secinfo@0:10 ISVALID
+    if chk $[ISVALID] "00000000000000000000000000000000"
+        set VALIDBACKUP "0"
+    end
+else
+    set VALIDBACKUP "0"
+end
+if chk $[VALIDBACKUP] "1"
+    cp -n -w G:/secinfo 1:/rw/sys/SecureInfo_A
+end
+
+# revisa la integridad del respaldo de HWCAL0, y copialo a la NAND si es valido
+if shaget G:/hwcal0@0:900 NULL
+    fget G:/hwcal0@0:4 HEADER
+    if chk -u $[HEADER] "4343414C"
+        set VALIDBACKUP "0"
+    end
+else
+    set VALIDBACKUP "0"
+end
+if chk $[VALIDBACKUP] "1"
+    cp -n -w G:/hwcal0 1:/ro/sys/HWCAL0.dat
+end
+
+# revisa la integridad del respaldo de HWCAL1 , y copialo a la NAND si es valido
+if shaget G:/hwcal1@0:900 NULL
+    fget G:/hwcal1@0:4 HEADER
+    if chk -u $[HEADER] "4343414C"
+        set VALIDBACKUP "0"
+    end
+else
+    set VALIDBACKUP "0"
+end
+if chk $[VALIDBACKUP] "1"
+    cp -n -w G:/hwcal1 1:/ro/sys/HWCAL1.dat
+end
+
+# la bandera esta hecha en ramdrive ya que las personas deberian hacer la re-corrida pedida inmediatamente, y estoy metiendoselos por su garganta lo mas que puedo. si lo ignoran y reinician igual, primero que mierda
+fdummy 9:/RECOVERYFLAG 400
+echo "Intento de recuperamiento terminado.\nctrcheck se reiniciara automaticamente.\n \Haz otro check para obtener los verdaderos resultados.\n"
+imgumount
+goto cleanup
+
+@TWLNAND
+set PREVIEW_MODE "ctrcheck v$[VERSION]\nActualmente procesando: NAND. Progreso:\n \nEncabezado NAND: LISTO\nSectores NAND: LISTO\nCTRNAND: LISTO\nTWLNAND: ~~~\nTWLP: ---\nParticiones FIRM: ---"
+#revisa si la TWLNAND es accesible
+if not isdir 2:
+    set TWLNAND_LOG "$[TWLNAND_LOG]Error: TWLNAND no encontrada.\n"
+    goto TWLP
+end
+# la consola no encendera si shared2 no existe, pero recrearlo es facil y sin daños
+if not isdir 2:/shared2
+    if ask "Una carpeta necesaria para encender no existe. Presiona (A) para arreglar este problema."
+        mkdir 2:/shared2
+        set TWLNAND_LOG "$[TWLNAND_LOG]Información: shared2 ha sido recreada.\n"
+    else 
+        set TWLNAND_LOG "$[TWLNAND_LOG]Critico: shared2 no encontrada, y no se recreo cuando se pregunto.\n"
+    end
+end
+# busca el inspect.log, y si existe, compara su copia del numero de serie contra SecureInfo
+if isdir 2:/sys/log
+    if find 2:/sys/log/inspect.log INSPECTLOG
+        if chk $[SECVALID] "1"
+            fget $[INSPECTLOG]@77:1 TWLNSERIALCHECK
+            if chk $[TWLNSERIALCHECK] "0a"
+                fget $[INSPECTLOG]@6D:0A TWLNSERIAL
+            else
+                fget $[INSPECTLOG]@6D:0B TWLNSERIAL
+            end
+            if chk -u $[SECSERIAL] $[TWLNSERIAL]
+                set TWLNAND_LOG "$[TWLNAND_LOG]Advertencia: El numero de serie de inspect.log  no coincide con SecureInfo.\n"
+            end
+        end
+    else
+        set TWLNAND_LOG "$[TWLNAND_LOG]Advertencia: inspect.log no encontrado.\n"
+    end
+else
+    set TWLNAND_LOG "$[TWLNAND_LOG]Advertencia: La carpeta 2:/sys/log no ha sido encontrada, significando que inspect.log tampoco fue encontrado.\n"
+end
+
+@TWLP
+set PREVIEW_MODE "ctrcheck v$[VERSION]\nActualmente procesando: NAND. Progreso:\n \nEncabezado NAND: LISTO\nSectores NAND: LISTO\nCTRNAND: LISTO\nTWLNAND: LISTO\nTWLP: ~~~\nParticiones FIRM: ---"
+# you don't need TWLP to boot (or for a lot of things, really), but it's still good to check everything's in place
+if not isdir 3:
+    set TWLNAND_LOG "$[TWLNAND_LOG]Advertencia: TWLP no encotrado\n"
+end
+
+@FIRM_Data
+set PREVIEW_MODE "ctrcheck v$[VERSION]\nActualmente procesando: NAND. Progreso\n \nEncabezado NAND: LISTO\nSectores NAND: LISTO\nCTRNAND: LISTO\nTWLNAND: LISTO\nTWLP: LISTO\nParticiones FIRM: ~~~"
+# revisiones basicas para saber cuantas particiones FIRM hay y para saber cuales son
+set FIRMEXIST "0"
+set ALTFIRMEXIST "0"
+set BONUSFIRMS "0"
+set TOOMANYFIRMS "0"
+if find S:/firm0.bin NULL
+    set FIRMEXIST "1"
+end
+if find S:/firm1.bin NULL
+    set ALTFIRMEXIST "1"
+end
+if find S:/firm2.bin NULL
+    set BONUSFIRMS "1"
+end
+if find S:/firm5.bin NULL
+    set TOOMANYFIRMS "1"
+end
+if chk $[FIRMEXIST] "0"
+    if chk $[ALTFIRMEXIST] "0"
+        set FIRM_LOG "$[FIRM_LOG]Error: FIRM0 y FIRM1 no encontradas. NO APAGUES LA CONSOLA antes de que hayas arreglado esto, a menos que tengas acceso a ntrboot .\n"
+        goto NAND_End
+    else
+        set FIRM_LOG "$[FIRM_LOG]Bruh Momento: FIRM0 no encontrada, pero FIRM1 existe. Esto no deberia ser posible, la consola esta probablemente sufriendo de un derrame cerebral.\n"
+    end
+else
+    if chk $[ALTFIRMEXIST] "0"
+        set FIRM_LOG "$[FIRM_LOG]Critico: FIRM1 no encontrada, pero FIRM0 existe. La consola no esta muerta todavia, pero arregla esto pronto.\n"
+    end
+end
+if chk $[BONUSFIRMS] "1"
+    if chk $[TOOMANYFIRMS] "1"
+        set FIRM_LOG "$[FIRM_LOG]Bruh Momento: ...¿Porqué hay mas de 5 particiones FIRM? Espero que solo hayas sacrificado el AGBSAVE.\n"
+    else
+        set FIRM_LOG "$[FIRM_LOG]Información: Particiones FIRM extra detectadas. Pero oye, las reglas fueron hechas para romperse, ¿cierto?\n"
+    end
+end
+
+# compara los espacios FIRM contra todos los hashes de los payloads que normalmente esperariamos
+# agrega hashes para las nuevas versionas de b9s y de fb3ds ya que ya se lanzaron
+for S: firm*.bin
+    strsplit FIRM $[FORPATH] "/"
+    strsplit -b FIRM $[FIRM] "."
+    # empieza inmediatamente con los checks de b9s porque son los mas comunes, aceleran el script si se detectan primero
+    if sha $[FORPATH]@0:3E00 72002296D1B8B1D4E462EA340124D836BA7F8D6BF16617F369ED90983C42BB98
+        set FIRM_LOG "$[FIRM_LOG]Información: b9s v1.4 instalado a $[FIRM].\n"
+    elif sha $[FORPATH]@0:7800 79C68585B4BA1D7C4A91B858861553E768C6576B92E303810B33219736B3598B
+        set FIRM_LOG "$[FIRM_LOG]Advertencia: b9s v1.3 instalado a $[FIRM].\n"
+    elif sha $[FORPATH]@0:10C00 A765E44844BD5667CC1D7A9A89AD45EC674F8392367F4418CCB08152581D7B3A
+        set FIRM_LOG "$[FIRM_LOG]Advertencia: b9s v1.2 instalado a $[FIRM].\n"
+    elif sha $[FORPATH]@0:10C00 D77BEE742E7E7D528BAA20E6ADA7AC822598DDCACDFC81B1F13E32C94F4EBC50 
+        set FIRM_LOG "$[FIRM_LOG]Advertencia: b9s v1.1 instalado a $[FIRM].\n"
+    elif sha $[FORPATH]@0:20800 43978C226D3164047051B1B534D6589608F1FA04E0B1766E1FDBEB3BC41707B6
+        set FIRM_LOG "$[FIRM_LOG]Advertencia: b9s v1.0 instalado a $[FIRM].\n"
+    elif verify $[FORPATH]
+        # revisa las firmas sighax de los usuarios de fastboot3DS
+        # sciresm es usado cuando fb3DS es instalado por fuentes externas, derrek es usado si fb3DS se actualizara a si mismo
+        # y eso significa que nunca verias al derrek sig en acción. ten cuidado si lo ves
+        if sha $[FORPATH]@100:100 078CC0CFD850A27093DDA2630C3603CA0C96969BD1F26DA48AC7B1BAE5DD5219
+            set FIRMSIG "SciresM"
+        elif sha $[FORPATH]@100:100 ADB73ABC35708EF1DFE9EF9CA5FAC8BFC2DF916BB2E38101858482409F0D450A
+            set FIRMSIG "derrek"
+        else 
+            set FIRMSIG "none"
+        end
+        # minfirm es un caso especial, ya que es solo usado por b9stool y no se deberia quedar mucho despues de instalar cfw. es mejor desinstalarlo antes de instalar fb3ds
+         if sha $[FORPATH]@0:100 93EE0A3799072EFB368DAD3174D8DE2EC9735BC13AC78C087DA80
+            set FIRM_LOG "$[FIRM_LOG]Critico: minfirm instalado a $[FIRM].\n"
+        elif chk -u $[FIRMSIG] "none"
+            if sha $[FORPATH]@0:100 D36E802EEA55B92110438D0A3B09DFCEEEC71AEB7BF05073A2E0E857827F3903
+                set FIRM_LOG "$[FIRM_LOG]Información: fb3DS v1.2 ($[FIRMSIG] sig) instalado a $[FIRM].\n"
+            elif sha $[FORPATH]@0:100 9C8D28272421C78AC796EB9023A6D1373F31176CB693CE1B04B1B78112E25226
+                set FIRM_LOG "$[FIRM_LOG]Advertencia: fb3DS v1.1 ($[FIRMSIG] sig) instalado a $[FIRM].\n"
+            elif sha $[FORPATH]@0:100 5E58A159C057D0762E6BFC53FE5A5CDAECA338544B252B85524DFBBB1D546DCB
+                set FIRM_LOG "$[FIRM_LOG]Advertencia: fb3DS v1.1-beta ($[FIRMSIG] sig) instalado a $[FIRM].\n"
+            elif sha $[FORPATH]@0:100 12EBA2DDB6B5203E66CBE82A963B56AECF540814F15F8539D0CE65DAE818BBB7
+                set FIRM_LOG "$[FIRM_LOG]Advertencia: fb3DS v1.0 ($[FIRMSIG] sig) instalado a $[FIRM].\n"
+            else
+                set FIRM_LOG "$[FIRM_LOG]Advertencia: Firm desconocida valida $[FIRMSIG] sig instalada a $[FIRM].\n"
+            end
+        else
+            set FIRM_LOG "$[FIRM_LOG]Información: Firm desconocida/normal valida instalada a $[FIRM].\n"
+        end
+    else 
+        set FIRM_LOG "$[FIRM_LOG]Error: Firm invalida instalada a $[FIRM].\n"
+    end
+next
+
+@NAND_End
+if chk $[FULL] "1"
+    goto SD_Files
+else
+    goto Misc_Files
+end
+
+
+@SD_Files
+set PREVIEW_MODE "ctrcheck v$[VERSION]\nActualmente procesando: SD. Progreso:\n \nEstructura de la SD: ~~~"
+# este script NO NECESITA una SD para correr, necesariamente, pero tendrias que haberlo copiado a la NAND a proposito
+if not isdir 0:
+    set SD_LOG "$[SD_LOG]Bruh Momento: No hay una SD insertada. Fuiste afuera de tu camino para encontrar esto, ¿no?\n"
+    goto SD_End
+end
+if isdir "0:/Nintendo 3DS"
+    if isdir A:
+        if find A:/dbs/title.db TITLEDB
+            if shaget $[TITLEDB]@0:400 NULL
+                fget $[TITLEDB]@100:4 HEADER
+                #revisa si SD title.db tiene el encabezado magico DIFF
+                if chk -u $[HEADER] "44494646"
+                    if ask "La SD title.db es invalida.\nPresiona (A) para resetearla.\n \n(Esto eliminara todas tus aplicaciones y juegos,\npero probablemente ya estaban corruptos\npor lo que haya causado esto.)"
+                        rm $[TITLEDB]
+                        fdummy $[TITLEDB] 400
+                        set SD_LOG "$[SD_LOG]Advertencia: La SD title.db necesita ser reseteada. Reinicia y ve a Configuración de la consola -> Gestión de datos -> Nintendo 3DS -> Programas para hacer esto.\n"
+                    else
+                        set SD_LOG "$[SD_LOG]Critico: Los datos de SD title.db son invalidos.\n"
+                    end
+                end
+            else
+                if ask "La SD title.db es invalida.\nPresiona (A) para resetearla.\n \n(Esto eliminara todas tus aplicaciones y juegos,\npero probablemente ya estaban corruptos\npor lo que haya causado esto.)"
+                    rm $[TITLEDB]
+                    fdummy $[TITLEDB] 400
+                    set SD_LOG "$[SD_LOG]Advertencia: La SD title.db necesita ser reseteada. Reinicia y ve a Configuración de la consola -> Gestión de datos -> Nintendo 3DS -> Programas para hacer esto.\n"
+                else
+                    set SD_LOG "$[SD_LOG]Critico: Los datos de SD title.db son invalidos.\n"
+                end
+            end 
+        else
+            set TITLEDB A:/dbs/title.db
+            if ask "La SD title.db no existe.\nPresione (A) para crear una vacia.\n \n(Una title database es necesaria\npara instalar juegos y aplicaciones.)"
+                if not isdir A:/dbs
+                    mkdir A:/dbs
+                end
+                fdummy $[TITLEDB] 400
+                set SD_LOG "$[SD_LOG]Advertencia: La SD title.db necesita ser reseteada. Reinicia y ve a Configuración de la consola -> Gestión de datos -> Nintendo 3DS -> Programas para hacer esto.\n"
+            else
+                set SD_LOG "$[SD_LOG]Critico: La SD title.db no ha sido encontrada.\n"
+            end
+        end
+    else
+        if isdir "0:/Nintendo 3DS/$[SYSID0]"
+            set SD_LOG "$[SD_LOG]Advertencia: La carpeta Nintendo 3DS tiene datos validos, pero los datos son inaccesibles.\n"
+        else
+            set SD_LOG "$[SD_LOG]Información: La carpeta Nintendo 3DS existe, pero no tiene datos.\n"
+        end
+    end
+    if not find 0:/boot.3dsx NULL
+        set SD_LOG "$[SD_LOG]Advertencia: boot.3dsx no esta en la raíz de la SD.\n"
+    end
+    if not find 0:/boot.firm NULL
+        set SD_LOG "$[SD_LOG]Advertencia: boot.firm no esta en la raiz de la SD.\n"
+    end
+else
+    set SD_LOG "$[SD_LOG]Advertencia: La carpeta Nintendo 3ds no ha sido encontrada.\n"
+end
+
+@Misc_Files
+set PREVIEW_MODE "ctrcheck v$[VERSION]\nActualmente procesando: Otro. Progreso:\nNVRAM: ~~~\OTP: ---\n"
+# revisa si el SPI flash de NVRAM funciona, porque son malas noticias si no
+if not shaget M:/nvram.mem@0:400 NULL
+    set MISC_LOG "$[MISC_LOG]Critico: NVRAM es inaccesible.\n"
+end
+# boot9strap decodifica la OTP y la hace disponible para GodMode0, otros bootloaders no lo hacen
+if not find M:/otp_dec.mem NULL
+    set MISC_LOG "$[MISC_LOG]Advertencia: OTP decodificado no encontrado. (Si no estas usando b9s, puedes ignorar esto.)\n"
+end
+
+@Results
+dumptxt 0:/gm9/ctrcheck_latest_espa.txt "Fecha y tiempo: $[DATESTAMP] $[TIMESTAMP]\n---"
+if chk -u $[NANDSECTORS_LOG] ""
+    dumptxt -p 0:/gm9/ctrcheck_latest_espa.txt $[NANDSECTORS_LOG]
+end
+if chk -u $[ESSENTIALS_LOG] ""
+    dumptxt -p 0:/gm9/ctrcheck_latest_espa.txt $[ESSENTIALS_LOG]
+end
+if chk -u $[CTRNAND_LOG] ""
+    dumptxt -p 0:/gm9/ctrcheck_latest_espa.txt $[CTRNAND_LOG]
+end
+if chk -u $[TWLNAND_LOG] ""
+    dumptxt -p 0:/gm9/ctrcheck_latest_espa.txt $[TWLNAND_LOG]
+end
+if chk -u $[FIRM_LOG] ""
+    dumptxt -p 0:/gm9/ctrcheck_latest_espa.txt $[FIRM_LOG]
+end
+if chk -u $[SD_LOG] ""
+    dumptxt -p 0:/gm9/ctrcheck_latest_espa.txt $[SD_LOG]
+end
+if chk -u $[MISC_LOG] ""
+    dumptxt -p 0:/gm9/ctrcheck_latest_espa.txt $[MISC_LOG]
+end
+textview 0:/gm9/ctrcheck_latest_espa.txt
+if chk $[LOG] "activado"
+    dumptxt -p 0:/gm9/ctrcheck_log_espa.txt "Fecha y tiempo: $[DATESTAMP] $[TIMESTAMP]\n---"
+    if chk -u $[NANDSECTORS_LOG] ""
+        dumptxt -p 0:/gm9/ctrcheck_log_espa.txt $[NANDSECTORS_LOG]
+    end
+    if chk -u $[ESSENTIALS_LOG] ""
+        dumptxt -p 0:/gm9/ctrcheck_log_espa.txt $[ESSENTIALS_LOG]
+    end
+    if chk -u $[CTRNAND_LOG] ""
+        dumptxt -p 0:/gm9/ctrcheck_log_espa.txt $[CTRNAND_LOG]
+    end
+    if chk -u $[TWLNAND_LOG] ""
+        dumptxt -p 0:/gm9/ctrcheck_log_espa.txt $[TWLNAND_LOG]
+    end
+    if chk -u $[FIRM_LOG] ""
+        dumptxt -p 0:/gm9/ctrcheck_log_espa.txt $[FIRM_LOG]
+    end
+    if chk -u $[SD_LOG] ""
+        dumptxt -p 0:/gm9/ctrcheck_log_espa.txt $[SD_LOG]
+    end
+    if chk -u $[MISC_LOG] ""
+        dumptxt -p 0:/gm9/ctrcheck_log.txt $[MISC_LOG]
+    end
+    echo "Check completado.\n \nEstos resultados también estan en\n0:/gm9/ctrcheck_latest_espa.txt,\npero el archivo se sobrescribira si corres esto \ndenuevo.\n \nSin embargo, tambien ha sido añadido al\nregistro permanente en 0:/gm9/ctrcheck_log_espa.txt."
+else
+    echo "Check completado.\n \nEstos resultados también estan en\n0:/gm9/ctrcheck_latest_espa.txt,\npero el archivo se sobrescribira si corres esto \ndenuevo."
+end
+goto cleanup
+
+@check_Cambiar_registro_permanente
+if chk $[LOG] "desactivado"
+    set LOG "activado"
+else
+    set LOG "desactivado"
+end
+goto menu
+
+@check_Salir
