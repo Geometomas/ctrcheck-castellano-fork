@@ -384,7 +384,7 @@ end
 set PREVIEW_MODE "ctrcheck v$[VERSION]\nActualmente procesando: NAND. Progreso:\n \nEncabezado NAND: LISTO\nSectores NAND: LISTO\nCTRNAND: !!!\nTWLNAND: ---\nTWLP: ---\nFIRM Partitions: ---"
 set TRYRECOVERY "0"
 if find S:/essential.exefs NULL
-    if ask "Archivos criticos en la CTRNAND son invalidos,\npero una copia de seguridad se ha encontrado.\nPresiona (A) para entrar al modo de recuperación de datos.\n \n(Si recientemente intentaste esto,\npuedes omitir seguramente esta parte.)"
+    if ask "Archivos criticos en la CTRNAND son invalidos,\npero una copia de seguridad se ha encontrado.\nPresiona (A) para entrar al modo de recuperación \nde datos.\n \n(Si recientemente intentaste esto,\npuedes omitir seguramente esta parte.)"
         allow -a 1:
         set TRYRECOVERY "1"
     else
